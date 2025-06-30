@@ -8,14 +8,9 @@ from datetime import datetime
 
 class HttpServer:
     def __init__(self):
-        # ---- PERBAIKAN: Cara yang lebih robust untuk menentukan direktori basis ----
-        # Dapatkan path absolut dari file script http.py ini sendiri.
         script_path = os.path.abspath(__file__)
-        # Direktori basis diasumsikan sama dengan lokasi script http.py.
         self.base_dir = os.path.dirname(script_path)
-        # --------------------------------------------------------------------------
 
-        # Pastikan direktori basis ini ada, jika tidak, buatkan.
         os.makedirs(self.base_dir, exist_ok=True)
         logging.info(f"File operations will be based in: {self.base_dir}")
         

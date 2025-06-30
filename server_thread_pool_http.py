@@ -1,74 +1,86 @@
 from socket import *
 import socket
-import time
 import sys
 import logging
-import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 from http import HttpServer
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+
 httpserver = HttpServer()
 
-#untuk menggunakan threadpool executor, karena tidak mendukung subclassing pada process,
-#maka class ProcessTheClient dirubah dulu menjadi function, tanpda memodifikasi behaviour didalamnya
+def ProcessTheClient(connection, address):
+    try:
+        headers_data = b""
+        while b"\r\n\r\n" not in headers_data:
+            chunk = connection.recv(1024)
+            if not chunk: break
+            headers_data += chunk
+        
+        header_end_pos = headers_data.find(b"\r\n\r\n")
+        if header_end_pos == -1: return
 
-def ProcessTheClient(connection,address):
-		rcv=""
-		while True:
-			try:
-				data = connection.recv(32)
-				if data:
-					#merubah input dari socket (berupa bytes) ke dalam string
-					#agar bisa mendeteksi \r\n
-					d = data.decode()
-					rcv=rcv+d
-					if rcv[-2:]=='\r\n':
-						#end of command, proses string
-						#logging.warning("data dari client: {}" . format(rcv))
-						hasil = httpserver.proses(rcv)
-						#hasil akan berupa bytes
-						#untuk bisa ditambahi dengan string, maka string harus di encode
-						hasil=hasil+"\r\n\r\n".encode()
-						#logging.warning("balas ke  client: {}" . format(hasil))
-						#hasil sudah dalam bentuk bytes
-						connection.sendall(hasil)
-						rcv=""
-						connection.close()
-						return
-				else:
-					break
-			except OSError as e:
-				pass
-		connection.close()
-		return
+        body_chunk = headers_data[header_end_pos + 4:]
+        headers_data = headers_data[:header_end_pos + 4]
+        
+        content_length = 0
+        headers_str = headers_data.decode('utf-8', 'ignore')
+        for line in headers_str.split('\r\n'):
+            if line.lower().startswith('content-length:'):
+                try:
+                    content_length = int(line.split(':', 1)[1].strip())
+                except (ValueError, IndexError):
+                    content_length = 0
+                break
+        
+        body_data = body_chunk
+        while len(body_data) < content_length:
+            chunk = connection.recv(1024)
+            if not chunk: break
+            body_data += chunk
+        
+        full_request = headers_data + body_data
+        hasil = httpserver.proses(full_request)
+        connection.sendall(hasil)
 
-
+    except Exception as e:
+        logging.error(f"Error processing client {address}: {e}")
+    finally:
+        connection.close()
+        logging.info(f"Connection from {address} closed.")
+    return
 
 def Server():
-	the_clients = []
-	my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    SERVER_HOST = '0.0.0.0'
+    SERVER_PORT = 8885
+    
+    my_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-	my_socket.bind(('0.0.0.0', 8885))
-	my_socket.listen(1)
+    try:
+        my_socket.bind((SERVER_HOST, SERVER_PORT))
+        my_socket.listen(1)
+        logging.info(f"Thread Pool Server running on http://{SERVER_HOST}:{SERVER_PORT}...")
+    except OSError as e:
+        logging.error(f"Failed to bind to {SERVER_HOST}:{SERVER_PORT}. Error: {e}")
+        sys.exit(1)
 
-	with ThreadPoolExecutor(20) as executor:
-		while True:
-				connection, client_address = my_socket.accept()
-				#logging.warning("connection from {}".format(client_address))
-				p = executor.submit(ProcessTheClient, connection, client_address)
-				the_clients.append(p)
-				#menampilkan jumlah process yang sedang aktif
-				jumlah = ['x' for i in the_clients if i.running()==True]
-				print(jumlah)
+    with ThreadPoolExecutor(20) as executor:
+        while True:
+            try:
+                connection, client_address = my_socket.accept()
+                logging.info(f"Connection received from {client_address}")
+                executor.submit(ProcessTheClient, connection, client_address)
+            except KeyboardInterrupt:
+                logging.info("Server shutting down by user request (Ctrl+C).")
+                break
+            except Exception as e:
+                logging.error(f"An error occurred in the main server loop: {e}")
 
-
-
-
-
-def main():
-	Server()
-
-if __name__=="__main__":
-	main()
-
+if __name__ == "__main__":
+    Server()

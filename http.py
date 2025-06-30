@@ -1,123 +1,137 @@
 import sys
+import os
 import os.path
 import uuid
+import logging
 from glob import glob
 from datetime import datetime
 
 class HttpServer:
-	def __init__(self):
-		self.sessions={}
-		self.types={}
-		self.types['.pdf']='application/pdf'
-		self.types['.jpg']='image/jpeg'
-		self.types['.txt']='text/plain'
-		self.types['.html']='text/html'
-	def response(self,kode=404,message='Not Found',messagebody=bytes(),headers={}):
-		tanggal = datetime.now().strftime('%c')
-		resp=[]
-		resp.append("HTTP/1.0 {} {}\r\n" . format(kode,message))
-		resp.append("Date: {}\r\n" . format(tanggal))
-		resp.append("Connection: close\r\n")
-		resp.append("Server: myserver/1.0\r\n")
-		resp.append("Content-Length: {}\r\n" . format(len(messagebody)))
-		for kk in headers:
-			resp.append("{}:{}\r\n" . format(kk,headers[kk]))
-		resp.append("\r\n")
+    def __init__(self):
+        # ---- PERBAIKAN: Cara yang lebih robust untuk menentukan direktori basis ----
+        # Dapatkan path absolut dari file script http.py ini sendiri.
+        script_path = os.path.abspath(__file__)
+        # Direktori basis diasumsikan sama dengan lokasi script http.py.
+        self.base_dir = os.path.dirname(script_path)
+        # --------------------------------------------------------------------------
 
-		response_headers=''
-		for i in resp:
-			response_headers="{}{}" . format(response_headers,i)
-		#menggabungkan resp menjadi satu string dan menggabungkan dengan messagebody yang berupa bytes
-		#response harus berupa bytes
-		#message body harus diubah dulu menjadi bytes
-		if (type(messagebody) is not bytes):
-			messagebody = messagebody.encode()
+        # Pastikan direktori basis ini ada, jika tidak, buatkan.
+        os.makedirs(self.base_dir, exist_ok=True)
+        logging.info(f"File operations will be based in: {self.base_dir}")
+        
+        self.sessions={}
+        self.types={}
+        self.types['.pdf']='application/pdf'
+        self.types['.jpg']='image/jpeg'
+        self.types['.txt']='text/plain'
+        self.types['.html']='text/html'
 
-		response = response_headers.encode() + messagebody
-		#response adalah bytes
-		return response
+    def _get_safe_path(self, client_path):
+        safe_filename = os.path.basename(client_path)
+        return os.path.join(self.base_dir, safe_filename)
 
-	def proses(self,data):
-		
-		requests = data.split("\r\n")
-		#print(requests)
+    def http_get(self, object_address, headers):
+        if object_address == '/list':
+            try:
+                files = os.listdir(self.base_dir)
+                file_list_str = "\n".join(files)
+                return self.response(200, 'OK', file_list_str.encode(), {'Content-Type': 'text/plain'})
+            except Exception as e:
+                return self.response(500, "Internal Server Error", str(e).encode())
 
-		baris = requests[0]
-		#print(baris)
+        if object_address == '/':
+            return self.response(200, 'OK', b'Ini Adalah web Server percobaan')
 
-		all_headers = [n for n in requests[1:] if n!='']
+        safe_path = self._get_safe_path(object_address.lstrip('/'))
+        
+        if os.path.exists(safe_path) and os.path.isfile(safe_path):
+            try:
+                with open(safe_path, 'rb') as fp:
+                    isi = fp.read()
+                fext = os.path.splitext(safe_path)[1]
+                content_type = self.types.get(fext, 'application/octet-stream')
+                return self.response(200, 'OK', isi, {'Content-Type': content_type})
+            except Exception as e:
+                return self.response(500, "Internal Server Error", str(e).encode())
+        else:
+            logging.warning(f"File not found at safe path: {safe_path}")
+            return self.response(404, 'Not Found', b'File not found')
 
-		j = baris.split(" ")
-		try:
-			method=j[0].upper().strip()
-			if (method=='GET'):
-				object_address = j[1].strip()
-				return self.http_get(object_address, all_headers)
-			if (method=='POST'):
-				object_address = j[1].strip()
-				return self.http_post(object_address, all_headers)
-			else:
-				return self.response(400,'Bad Request','',{})
-		except IndexError:
-			return self.response(400,'Bad Request','',{})
-	def http_get(self,object_address,headers):
-		files = glob('./*')
-		#print(files)
-		thedir='./'
-		if (object_address == '/'):
-			return self.response(200,'OK','Ini Adalah web Server percobaan',dict())
+    def http_post(self, object_address, headers, body):
+        if object_address.startswith('/upload/'):
+            filename = object_address[len('/upload/'):]
+            safe_path = self._get_safe_path(filename)
+            
+            if not os.path.basename(filename):
+                return self.response(400, 'Bad Request', b'Filename not specified.')
+            
+            try:
+                with open(safe_path, 'wb') as f:
+                    f.write(body)
+                logging.info(f"File uploaded to {safe_path}")
+                return self.response(200, 'OK', f'File {os.path.basename(safe_path)} uploaded successfully.'.encode())
+            except Exception as e:
+                return self.response(500, 'Internal Server Error', f'Error uploading file: {e}'.encode())
+        
+        return self.response(400, 'Bad Request', b'Invalid POST request.')
 
-		if (object_address == '/video'):
-			return self.response(302,'Found','',dict(location='https://youtu.be/katoxpnTf04'))
-		if (object_address == '/santai'):
-			return self.response(200,'OK','santai saja',dict())
+    def http_delete(self, object_address, headers):
+        if object_address.startswith('/delete/'):
+            filename = object_address[len('/delete/'):]
+            safe_path = self._get_safe_path(filename)
+            
+            if not os.path.basename(filename):
+                return self.response(400, 'Bad Request', b'Filename not specified.')
+            
+            if os.path.exists(safe_path) and os.path.isfile(safe_path):
+                try:
+                    os.remove(safe_path)
+                    logging.info(f"File deleted from {safe_path}")
+                    return self.response(200, 'OK', f'File {os.path.basename(safe_path)} deleted.'.encode())
+                except Exception as e:
+                    return self.response(500, 'Internal Server Error', f'Error deleting file: {e}'.encode())
+            else:
+                logging.warning(f"Attempt to delete non-existent file at safe path: {safe_path}")
+                return self.response(404, 'Not Found', f'File {os.path.basename(safe_path)} not found.'.encode())
+        
+        return self.response(400, 'Bad Request', b'Invalid DELETE request.')
 
+    def response(self, kode=404, message='Not Found', messagebody=b'', headers={}):
+        logging.info(f"Sending response: {kode} {message}")
+        tanggal = datetime.now().strftime('%c')
+        resp = [
+            f"HTTP/1.0 {kode} {message}\r\n",
+            f"Date: {tanggal}\r\n", "Connection: close\r\n", "Server: myserver/1.0\r\n",
+            f"Content-Length: {len(messagebody)}\r\n"
+        ]
+        for kk, vv in headers.items():
+            resp.append(f"{kk}:{vv}\r\n")
+        resp.append("\r\n")
+        response_headers = "".join(resp)
+        if not isinstance(messagebody, bytes):
+            messagebody = messagebody.encode('utf-8')
+        return response_headers.encode('utf-8') + messagebody
 
-		object_address=object_address[1:]
-		if thedir+object_address not in files:
-			return self.response(404,'Not Found','',{})
-		fp = open(thedir+object_address,'rb') #rb => artinya adalah read dalam bentuk binary
-		#harus membaca dalam bentuk byte dan BINARY
-		isi = fp.read()
-		
-		fext = os.path.splitext(thedir+object_address)[1]
-		content_type = self.types[fext]
-		
-		headers={}
-		headers['Content-type']=content_type
-		
-		return self.response(200,'OK',isi,headers)
-	def http_post(self,object_address,headers):
-		headers ={}
-		isi = "kosong"
-		return self.response(200,'OK',isi,headers)
-		
-			 	
-#>>> import os.path
-#>>> ext = os.path.splitext('/ak/52.png')
-
-if __name__=="__main__":
-	httpserver = HttpServer()
-	d = httpserver.proses('GET testing.txt HTTP/1.0')
-	print(d)
-	d = httpserver.proses('GET donalbebek.jpg HTTP/1.0')
-	print(d)
-	#d = httpserver.http_get('testing2.txt',{})
-	#print(d)
-#	d = httpserver.http_get('testing.txt')
-#	print(d)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    def proses(self, data):
+        try:
+            header_end_index = data.find(b"\r\n\r\n")
+            if header_end_index == -1: return self.response(400, 'Bad Request', b'Invalid HTTP Request format')
+            headers_part_bytes = data[:header_end_index]
+            body_part = data[header_end_index + 4:]
+            headers_part_str = headers_part_bytes.decode('utf-8')
+            baris = headers_part_str.split("\r\n")[0]
+            method, object_address, _ = baris.split(" ", 2)
+            method = method.upper().strip()
+            object_address = object_address.strip()
+            logging.info(f"Processing request: {method} {object_address}")
+            if method == 'GET':
+                return self.http_get(object_address, {})
+            elif method == 'POST':
+                return self.http_post(object_address, {}, body_part)
+            elif method == 'DELETE':
+                return self.http_delete(object_address, {})
+            else:
+                return self.response(501, 'Not Implemented', b'Unsupported method')
+        except Exception as e:
+            logging.error(f"Error parsing request: {e}, Data: {data[:1024]}")
+            return self.response(400, 'Bad Request', b'Malformed request line')
